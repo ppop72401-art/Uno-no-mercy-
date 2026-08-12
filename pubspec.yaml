@@ -1,0 +1,16 @@
+name: local_hotspot_game
+description: A local multiplayer card game via Hotspot.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # لجلب خط تجول بسهولة
+  google_fonts: ^6.1.0 
+
+flutter:
+  uses-material-design: true
