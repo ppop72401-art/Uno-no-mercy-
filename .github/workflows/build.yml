@@ -3,7 +3,7 @@ name: Build UNO No Mercy APK
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # هذا السطر يسمح لك بتشغيل البناء يدوياً من زر Actions
+  workflow_dispatch:
 
 jobs:
   build:
@@ -23,8 +23,15 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Get Dependencies
-        run: flutter pub get
+      - name: Force Generate Fresh Android Project
+        run: |
+          rm -rf android 
+          flutter create . --platforms android
+          flutter pub get
+
+      - name: Inject All Network Permissions
+        run: |
+          perl -pi -e 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"\/>\n    <application/g' android/app/src/main/AndroidManifest.xml
 
       - name: Build APK
         run: flutter build apk --release
