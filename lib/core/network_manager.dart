@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../models/game_state.dart';
+import 'game_engine.dart';
 
 class NetworkManager {
   static final NetworkManager _instance = NetworkManager._internal();
@@ -12,56 +13,70 @@ class NetworkManager {
   ServerSocket? _serverSocket;
   Socket? _clientSocket;
   List<Socket> _clients = [];
-  
   String myPlayerId = '';
 
-  // Stream لبث حالة اللعبة للواجهة
   final ValueNotifier<GameState?> gameStateNotifier = ValueNotifier(null);
 
-  // --- دوال السيرفر (Host) ---
   Future<void> startHost(int port, String hostName) async {
     isHost = true;
     myPlayerId = 'host_1';
     
-    // إنشاء حالة مبدئية
     GameState initialState = GameState(
       status: 'waiting',
       players: [Player(id: myPlayerId, name: hostName, hand: [])],
       currentTurnId: '',
       discardPile: [],
+      deck: [],
     );
     gameStateNotifier.value = initialState;
 
     _serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
     _serverSocket!.listen((Socket client) {
       _clients.add(client);
-      
       client.listen((data) {
         _handleIncomingDataHost(utf8.decode(data), client);
-      }, onDone: () {
-        _clients.remove(client);
-      });
+      }, onDone: () => _clients.remove(client));
     });
+  }
+
+  void startGame() {
+    if (!isHost || gameStateNotifier.value == null) return;
+    
+    // ربط المحرك: هنا يتم توليد الأوراق وتوزيعها فعلياً!
+    GameEngine.initializeGame(gameStateNotifier.value!);
+    _broadcastGameState();
   }
 
   void _handleIncomingDataHost(String data, Socket client) {
     try {
       final decoded = jsonDecode(data);
+      final state = gameStateNotifier.value!;
+
       if (decoded['action'] == 'join') {
         String newPlayerId = 'player_${_clients.length}';
-        String newName = decoded['name'];
-        gameStateNotifier.value!.players.add(Player(id: newPlayerId, name: newName, hand: []));
-        
-        // إرسال الـ ID للاعب الجديد
+        state.players.add(Player(id: newPlayerId, name: decoded['name'], hand: []));
         client.add(utf8.encode(jsonEncode({'type': 'assign_id', 'id': newPlayerId})));
         _broadcastGameState();
+        
       } else if (decoded['action'] == 'play_card') {
-        // هنا يتم كتابة منطق اللعب المركزي (تحديث الأوراق والدور)
-        // ثم البث للجميع:
-        _broadcastGameState();
+        // ربط المحرك: معالجة لعب الورقة
+        if (state.currentTurnId == decoded['playerId']) {
+          GameEngine.processPlay(state, decoded['playerId'], decoded['cardId']);
+          // إذا كانت الورقة سوداء، نحدث اللون المطلوب
+          if (decoded['color'] != null) {
+            state.activeColor = decoded['color'];
+          }
+          _broadcastGameState();
+        }
+      } else if (decoded['action'] == 'draw_card') {
+        // ربط المحرك: معالجة سحب الورقة
+        if (state.currentTurnId == decoded['playerId']) {
+          GameEngine.processDraw(state, decoded['playerId']);
+          _broadcastGameState();
+        }
       }
     } catch (e) {
-      print("Host parse error: $e");
+      print("Host error: $e");
     }
   }
 
@@ -71,49 +86,36 @@ class NetworkManager {
     for (var client in _clients) {
       client.add(utf8.encode(stateJson));
     }
-    // تحديث واجهة السيرفر نفسه
     gameStateNotifier.notifyListeners(); 
   }
 
-  // بدأ اللعبة من قبل السيرفر
-  void startGame() {
-    if (!isHost) return;
-    gameStateNotifier.value!.status = 'playing';
-    gameStateNotifier.value!.currentTurnId = gameStateNotifier.value!.players.first.id;
-    // (هنا تقوم بتوزيع الأوراق برمجياً على اللاعبين)
-    _broadcastGameState();
-  }
-
-
-  // --- دوال العميل (Client) ---
   Future<void> joinGame(String ip, int port, String playerName) async {
     isHost = false;
     _clientSocket = await Socket.connect(ip, port, timeout: const Duration(seconds: 5));
-    
-    // إرسال طلب انضمام
     sendAction({'action': 'join', 'name': playerName});
 
     _clientSocket!.listen((data) {
-      String msgs = utf8.decode(data);
-      // قد تصل عدة رسائل مدمجة، يجب معالجتها بشكل صحيح (تم التبسيط هنا)
       try {
-        final decoded = jsonDecode(msgs);
+        final decoded = jsonDecode(utf8.decode(data));
         if (decoded['type'] == 'assign_id') {
           myPlayerId = decoded['id'];
         } else if (decoded['type'] == 'state_update') {
           gameStateNotifier.value = GameState.fromJson(decoded['state']);
         }
       } catch (e) {
-        print("Client parse error: $e");
+        print("Client error: $e");
       }
     });
   }
 
   void sendAction(Map<String, dynamic> action) {
+    // التأكد من إرفاق الـ ID مع كل حركة
+    action['playerId'] = myPlayerId;
+    
     if (isHost) {
-      // إذا كان السيرفر هو من يلعب، يعالجها مباشرة
-      // _processAction(action); 
-      _broadcastGameState();
+      // السيرفر يعالج حركته داخلياً
+      String simulatedNetworkData = jsonEncode(action);
+      _handleIncomingDataHost(simulatedNetworkData, _clients.isNotEmpty ? _clients.first : Socket.connect('localhost', 80) as Socket); 
     } else {
       _clientSocket?.add(utf8.encode(jsonEncode(action)));
     }
